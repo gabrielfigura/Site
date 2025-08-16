@@ -1,28 +1,50 @@
+```python
 from flask import Flask, request, render_template, send_file, jsonify
 import os
 import subprocess
 import json
+import requests  # Para enviar mensagem ao Telegram
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
-import requests
-import whisper  # Para transcrição automática com detecção de idioma
-import torch  # Dependência do Whisper
+import whisper
+import torch
 from datetime import timedelta
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 EDITED_FOLDER = 'edited'
-MUSIC_FOLDER = 'music'  # Crie uma pasta 'music' com arquivos como 'action.mp3', 'calm.mp3', 'educational.mp3', etc.
+MUSIC_FOLDER = 'music'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(EDITED_FOLDER, exist_ok=True)
 os.makedirs(MUSIC_FOLDER, exist_ok=True)
 
 # Configurações API (substitua com suas chaves reais)
-YOUTUBE_API_KEY = 'SUA_CHAVE_API_YOUTUBE'  # Obtenha em console.developers.google.com
-YOUTUBE_CLIENT_SECRET_FILE = 'client_secret.json'  # Arquivo OAuth para upload
-INSTAGRAM_ACCESS_TOKEN = 'SEU_TOKEN_INSTAGRAM'  # Obtenha via Graph API
+YOUTUBE_API_KEY = 'SUA_CHAVE_API_YOUTUBE'
+YOUTUBE_CLIENT_SECRET_FILE = 'client_secret.json'
+INSTAGRAM_ACCESS_TOKEN = 'SEU_TOKEN_INSTAGRAM'
 INSTAGRAM_USER_ID = 'SEU_ID_USUARIO_INSTAGRAM'
+
+# Configurações do Telegram
+TELEGRAM_TOKEN = '8344261996:AAEgDWaIb7hzknPpTQMdiYKSE3hjzP0mqFc'
+TELEGRAM_CHAT_ID = '-1002783091818'
+SITE_URL = 'https://CleverVideosIA.squarecloud.app'  # Link personalizado
+
+# Enviar mensagem ao Telegram quando o site ficar online
+def send_telegram_message(message):
+    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+    payload = {
+        'chat_id': TELEGRAM_CHAT_ID,
+        'text': message
+    }
+    try:
+        response = requests.post(url, data=payload)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Erro ao enviar mensagem ao Telegram: {e}")
+
+# Enviar link do site ao iniciar
+send_telegram_message(f"O site está online! Acesse: {SITE_URL}")
 
 # Mapa de tipos de vídeo para músicas de fundo
 MUSIC_MAP = {
@@ -32,7 +54,6 @@ MUSIC_MAP = {
     'funny': 'funny.mp3',
 }
 
-# Função para formatar tempo para SRT
 def format_time(seconds):
     td = timedelta(seconds=seconds)
     hours, remainder = divmod(td.seconds, 3600)
@@ -40,7 +61,6 @@ def format_time(seconds):
     milliseconds = int(td.microseconds / 1000)
     return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
 
-# Função para gerar arquivo SRT a partir de transcrição
 def generate_srt(segments, output_path):
     with open(output_path, 'w', encoding='utf-8') as f:
         for i, segment in enumerate(segments, start=1):
@@ -49,25 +69,15 @@ def generate_srt(segments, output_path):
             text = segment['text'].strip()
             f.write(f"{i}\n{start} --> {end}\n{text}\n\n")
 
-# Função para editar vídeo: corta, adiciona legenda, música de fundo e efeitos
 def edit_video(input_path, output_path, duration_seconds, video_type):
     try:
-        # Extrai áudio para transcrição
         audio_path = os.path.join(UPLOAD_FOLDER, 'audio.mp3')
         subprocess.run(['ffmpeg', '-i', input_path, '-vn', '-acodec', 'libmp3lame', audio_path], check=True)
-
-        # Carrega modelo Whisper para transcrição automática
         model = whisper.load_model("base")
         result = model.transcribe(audio_path, language=None)
-
-        # Gera SRT
         srt_path = os.path.join(EDITED_FOLDER, 'subtitles.srt')
         generate_srt(result['segments'], srt_path)
-
-        # Seleciona música de fundo baseada no tipo de vídeo
         music_file = os.path.join(MUSIC_FOLDER, MUSIC_MAP.get(video_type, 'calm.mp3'))
-
-        # Edita vídeo: corta, adiciona legenda, mistura música, efeitos
         temp_path = os.path.join(EDITED_FOLDER, 'temp.mp4')
         subprocess.run([
             'ffmpeg', '-i', input_path, '-t', str(duration_seconds),
@@ -75,15 +85,11 @@ def edit_video(input_path, output_path, duration_seconds, video_type):
             '-af', 'afade=t=in:ss=0:d=3,afade=t=out:st=' + str(duration_seconds - 3) + ':d=3',
             temp_path
         ], check=True)
-
-        # Adiciona música de fundo (volume 20%)
         subprocess.run([
             'ffmpeg', '-i', temp_path, '-i', music_file,
             '-filter_complex', '[1:a]volume=0.2[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=3',
             '-map', '0:v', '-c:v', 'copy', '-shortest', output_path
         ], check=True)
-
-        # Limpa arquivos temporários
         os.remove(audio_path)
         os.remove(srt_path)
         os.remove(temp_path)
@@ -92,7 +98,6 @@ def edit_video(input_path, output_path, duration_seconds, video_type):
         print(f"Erro ao editar: {e}")
         return False
 
-# Rota principal: Formulário de upload e opções
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -102,13 +107,10 @@ def index():
         tipo = request.form.get('tipo')
         duracao = request.form.get('duracao')
         video_type = request.form.get('video_type')
-
         if file.filename == '':
             return jsonify({'error': 'Arquivo inválido'}), 400
-
         input_path = os.path.join(UPLOAD_FOLDER, file.filename)
         file.save(input_path)
-
         if duracao == '30s':
             duration_sec = 30
         elif duracao == '1min':
@@ -119,13 +121,10 @@ def index():
             duration_sec = int(request.form.get('custom_duracao', 60))
         else:
             duration_sec = 60
-
         output_filename = f"edited_{file.filename}"
         output_path = os.path.join(EDITED_FOLDER, output_filename)
         if not edit_video(input_path, output_path, duration_sec, video_type):
             return jsonify({'error': 'Falha na edição'}), 500
-
-        # Posta baseado no tipo
         if tipo == 'youtube':
             try:
                 credentials = Credentials.from_authorized_user_file('token.json', scopes=['https://www.googleapis.com/auth/youtube.upload'])
@@ -145,7 +144,7 @@ def index():
                 url = f'https://graph.facebook.com/v20.0/{INSTAGRAM_USER_ID}/media'
                 params = {
                     'media_type': 'REELS',
-                    'video_url': 'URL_DO_VIDEO_HOSPEADO',  # Hospede o vídeo publicamente primeiro
+                    'video_url': 'URL_DO_VIDEO_HOSPEADO',
                     'caption': 'Reel editado profissionalmente',
                     'access_token': INSTAGRAM_ACCESS_TOKEN
                 }
@@ -162,7 +161,6 @@ def index():
                 return jsonify({'error': f'Falha no upload Reels: {e}'}), 500
         else:
             return send_file(output_path, as_attachment=True)
-
     return render_template_string('''
     <!doctype html>
     <html lang="pt">
@@ -218,4 +216,6 @@ def index():
     ''')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+```
