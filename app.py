@@ -1,4 +1,3 @@
-```python
 from flask import Flask, request, render_template, send_file, jsonify
 import os
 import subprocess
@@ -218,4 +217,3 @@ def index():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
-```
